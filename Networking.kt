@@ -18,7 +18,7 @@ interface RestClient {
 
             override fun onResponse(call: Call<R>, response: Response<R>) {
                 response.body()?.let { success(it) } ?: run {
-                    httpRequest.decodeError(call, response)
+                    failure(httpRequest.decodeError(call, response))
                 }
             }
         })
