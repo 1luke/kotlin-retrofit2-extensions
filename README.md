@@ -68,7 +68,7 @@ for most use cases. The `Call<T>` instance offers `cancel()` should the request 
 
 However, by providing your own implementation for the `executor` property (required by `RetrofitFetching` interface),
 you can take control and manage the request. 
-e.g. see how this property is used to simulate networking in the unit tests (NetworkingTests.kt).
+e.g. see how this property is used to simulate networking in the unit tests (RetrofitFetchingTests.kt).
 
 
 #### Customize the error objects and result processing 

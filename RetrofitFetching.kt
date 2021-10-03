@@ -125,7 +125,7 @@ fun <R> RetrofitFetching.fetch(
  *
  * @param usingExecutor Network request executor (set to `this.executor` by default)
  * @param endpoint The API endpoint that should be fetched
- * @param resultProcessing Processes response and finds correct error case (if needed)
+ * @param resultProcessing Processes response and finds corresponding error case (if needed)
  * @param success Success callback with the response `R`
  * @param failure Failure callback with an error case from given error subtype `E`
  */
