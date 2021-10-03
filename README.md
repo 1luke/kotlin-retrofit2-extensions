@@ -1,6 +1,6 @@
 # A compact Retrofit extension for quick networking
 
-A simple quick helper to fetch some JSON with little code. Extends retrofit with `fetchJson` generic API that 
+A simple quick helper to fetch some JSON with little code. Extends retrofit with `fetch` generic API that 
 enforces expected data and error types specific to each endpoint. 
 
 The generic implementation makes it easy to extend the API with more endpoints without duplicating networking-code. 
@@ -20,19 +20,19 @@ api.fetchItem(
 )
 ```
 
-You can implement an `API` by inheriting the default implementations of `RetrofitAPI` interface 
+You can implement an `API` by inheriting the default implementations of `RetrofitFetching` interface 
 where all the magic happens. The implementation can be as simple as the following: 
 
 ```kotlin
 class API(
     // Use `enqueue` from `Call<T>` for most simple asynchronous requests
-    override val fetching: RetrofitAPI.Fetching = RetrofitAPI.callEnqueue 
-) : RetrofitAPI {
+    override val executor: RetrofitFetching.Executor = RetrofitFetching.callEnqueue 
+) : RetrofitFetching {
 
     fun fetchItem(success: (Item) -> Unit, failure: (AnyFetchError) -> Unit) {
         // Networking and response processing is all implemented 
-        // in `fetchJson` default implementation
-        fetchJson(endpoint = endpoint.fetchStuff(), success = success, failure = failure)
+        // in `fetch` default implementation
+        fetch(endpoint = endpoint.fetchItem(), success = success, failure = failure)
     }
 
     // Create your API endpoint using the 'service interface' that Retrofit requires
@@ -59,14 +59,14 @@ class API(
 
 ## Advance Use cases 
 
-#### Play with the `fetching` property
+#### Play with the `executor` property
 
-By default, the asynchronous networking operation uses `RetrofitAPI.callEnqueue` which simply means 
+By default, the asynchronous networking operation uses `RetrofitFetching.callEnqueue` which simply means 
 it relies on Retrofit's `enqueue` method on a given `Call<T>` object. 
 All thats promised (by Retrofit) is that the operation is asynchronous and does not block main thread - adequate 
 for most use cases. The `Call<T>` instance offers `cancel()` should the request need be interrupted. 
 
-However, by providing your own implementation for the `fetching` property (required by `RetrofitAPI` interface),
+However, by providing your own implementation for the `executor` property (required by `RetrofitFetching` interface),
 you can take control and manage the request. 
 e.g. see how this property is used to simulate networking in the unit tests (NetworkingTests.kt).
 
@@ -119,7 +119,7 @@ to handle all error cases, including `NotAuthorized` exhaustively.
 
 ```kotlin
 fun fetchPrivateDiary(success: (Diary) -> Unit, failure: (PrivateDataFetchError) -> Unit) {
-    fetchJson(
+    fetch(
         endpoint = endpoint.fetchPrivateDiary(), 
         resultProcessing = privateDataFetchProcessing(), 
         success = success,

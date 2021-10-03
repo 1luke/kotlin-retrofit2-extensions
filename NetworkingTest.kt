@@ -1,26 +1,25 @@
 
-import com.google.gson.GsonBuilder
-import okhttp3.MediaType
-import okhttp3.ResponseBody
 import org.junit.Test
-import retrofit2.Call
-import retrofit2.Callback
-import retrofit2.Response
+import retrofit2.*
 import retrofit2.http.GET
-import java.io.IOException
 
 //region Networking request and callback tests
 
-class RetrofitAPITest {
+/**
+ * Note: Use the `customBuild` factory or apply your own customization
+ * used in the app to allow the unit-tests test the right `retrofit` configuration.
+ */
+val retrofit: Retrofit get() = Retrofit.Builder().customBuild("http://test/")
 
-    private val api: TestEndpoint = buildRetrofit("http://test/", callTimeoutInSeconds = 1)
-        .create(TestEndpoint::class.java)
+class RetrofitFetchingTest {
+
+    private val api: TestEndpoint = retrofit.create(TestEndpoint::class.java)
 
     @Test fun testOnSuccessReturnsData() {
         val expectedData = TestData()
         var receivedData: TestData? = null
-        NetworkingSimulation(expectedData).fetchJson(
-            api.fetchTestData(),
+        NetworkingSimulation(expectedData).fetch(
+            endpoint = api.fetchTestData(),
             success = { data -> receivedData = data },
             failure = { }
         )
@@ -29,8 +28,8 @@ class RetrofitAPITest {
 
     @Test fun testOnFailureReturnsError() {
         var receivedError: AnyFetchError? = null
-        NetworkingSimulation(Throwable("-")).fetchJson(
-            api.fetchTestData(),
+        NetworkingSimulation(Throwable("-")).fetch(
+            endpoint = api.fetchTestData(),
             success = { },
             failure = { error -> receivedError = error }
         )
@@ -40,8 +39,8 @@ class RetrofitAPITest {
     @Test fun testOnSuccessInvokesOnlySuccess() {
         var receivedData = false
         var receivedError = false
-        NetworkingSimulation(TestData()).fetchJson(
-            api.fetchTestData(),
+        NetworkingSimulation(TestData()).fetch(
+            endpoint = api.fetchTestData(),
             success = { receivedData = true },
             failure = { receivedError = true }
         )
@@ -53,8 +52,8 @@ class RetrofitAPITest {
     @Test fun testOnFailureInvokesOnlyFailure() {
         var receivedData = false
         var receivedError = false
-        NetworkingSimulation(Throwable("-")).fetchJson(
-            api.fetchTestData(),
+        NetworkingSimulation(Throwable("-")).fetch(
+            endpoint = api.fetchTestData(),
             success = { receivedData = true },
             failure = { receivedError = true }
         )
@@ -76,35 +75,6 @@ class RetrofitAPITest {
 }
 //endregion
 
-//region Json Parsing Tests
-
-class RetrofitJsonParsingTest {
-
-    private val retrofit = buildRetrofit("http://test/", callTimeoutInSeconds = 10)
-
-    @Test fun testEmptyJsonReturnsDataWithDefaultAndNullValues() {
-        var emptyJsonParseResult: NullFieldTestData? = null
-        try {
-            emptyJsonParseResult = retrofit.responseBodyConverter<NullFieldTestData>(
-                NullFieldTestData::class.java, emptyArray()
-            ).convert(
-                ResponseBody.create(
-                    MediaType.parse("application/json"),
-                    GsonBuilder().create().toJson(emptyMap<String, Any>()).toString()
-                )
-            )
-        } catch (e: IOException) { }
-
-        assert(emptyJsonParseResult?.nonnullValue == 0)
-        assert(emptyJsonParseResult?.nullableValue == null)
-    }
-
-    // TODO: Test more scenarios
-
-    data class NullFieldTestData(val nonnullValue: Int, val nullableValue: String?)
-}
-//endregion
-
 //region Helper - Networking Simulation
 /**
  * Allows for networking simulation by exposing `onResponse` callback.
@@ -112,10 +82,10 @@ class RetrofitJsonParsingTest {
  */
 class NetworkingSimulation(
     private val onResponse: (Call<Any>, callback: Callback<Any>) -> Unit,
-) : RetrofitAPI, RetrofitAPI.Fetching {
-    override val fetching get() = this
+) : RetrofitFetching, RetrofitFetching.Executor {
+    override val executor get() = this
 
-    override fun <R> fetch(endpoint: Call<R>, callback: Callback<R>) {
+    override fun <R> fetchAndCallback(endpoint: Call<R>, callback: Callback<R>) {
         val badTest: () -> Nothing = {
             throw Throwable("Bad test! Set matching types for expected response")
         }

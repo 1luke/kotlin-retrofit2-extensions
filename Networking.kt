@@ -1,42 +1,69 @@
 
-import com.google.gson.GsonBuilder
-import okhttp3.OkHttpClient
 import retrofit2.Call
 import retrofit2.Callback
 import retrofit2.Response
-import retrofit2.Retrofit
-import retrofit2.converter.gson.GsonConverterFactory
-import java.util.concurrent.TimeUnit
 
+// Exceptions
+import java.lang.IllegalStateException
+import java.net.UnknownHostException
 
-//region Build Retrofit
-fun buildRetrofit(baseURL: String, callTimeoutInSeconds: Long) : Retrofit {
-    return Retrofit.Builder()
-        .baseUrl(baseURL)
-        .addConverterFactory(GsonConverterFactory.create(GsonBuilder()
-            .serializeNulls()
-            .create()))
-        .client(
-            OkHttpClient.Builder()
-                .callTimeout(callTimeoutInSeconds, TimeUnit.SECONDS)
-                .build())
-        .build()
-}
-//endregion
 
 //region Retrofit Asynchronous Networking
 
-interface RetrofitAPI {
-    val fetching: Fetching
+/**
+ * An interface that simplifies retrofit network requests via it's extension methods.
+ *
+ * The generic extension methods to `fetch` from remote facilitate scalable and unit-testable
+ * APIs with minimal code. A simple example can be:
+ * ```
+ * class API: RetrofitFetching {
+ *  // Build endpoints using your Retrofit service interface
+ *  val endpoint: Endpoint = Retrofit.Builder().customBuild(baseURL).create(Endpoint::class.java)
+ *
+ *  fun fetchItem(success: (Item) -> Unit, failure: (AnyFetchError) -> Unit) {
+ *      // Fetching, parsing and returning through `success` or `failure` is handled
+ *      this.fetch(endpoint = endpoint.fetchItem(), success = success, failure = failure)
+ *  }
+ * }
+ * ```
+ *
+ * See `executor` which uses Retrofit Call<T> `enqueue` by default and `resultProcessing`
+ * which uses a default processing using `AnyFetchError` object to customize if and API requires
+ * custom handling. Most fetch requests can be satisfied without a need for custom handling.
+ */
+interface RetrofitFetching {
+    /** An object that executes given Retrofit request. Set to `Call<T>.enqueue` by default. */
+    val executor: Executor get() = callEnqueue
 
-    interface Fetching {
-        fun <R> fetch(endpoint: Call<R>, callback: Callback<R>)
+    /** Check network connection and return `true`, `false` or `null` if unable to check. */
+    val checkNetwork: (() -> Boolean)? get() = null
+
+    /** An object that executes a Retrofit network request. */
+    interface Executor {
+        fun <R> fetchAndCallback(endpoint: Call<R>, callback: Callback<R>)
+    }
+
+    /**
+     * An object that receives Retrofit `Callback<T>` arguments and determines whether or not
+     * an error should be returned. Use to return specific error cases for a given network request.
+     * */
+    interface ResultProcessing<R, E> where E : AnyFetchError {
+        /** Invoked when Retrofit callback `onFailure` is received. */
+        val onFailure: (call: Call<R>, t: Throwable) -> E
+        /** Invoked when Retrofit callback `onResponse` is received with no data. */
+        val onNoData: (call: Call<R>, response: Response<R>) -> E
+        /** Invoked when Retrofit callback `onResponse` is received. */
+        val onResponse: (call: Call<R>, response: Response<R>) -> E?
+
+        /** Check network connection and return `true`, `false` or `null` if unable to check. */
+        var determineNetworkError: (() -> E?)?
     }
 
     companion object {
-        val callEnqueue: Fetching get() {
-            return object : Fetching {
-                override fun <R> fetch(endpoint: Call<R>, callback: Callback<R>) {
+        /** Creates and returns a network request executor using Retrofit `Call<T>` enqueue. */
+        val callEnqueue: Executor get() {
+            return object : Executor {
+                override fun <R> fetchAndCallback(endpoint: Call<R>, callback: Callback<R>) {
                     endpoint.enqueue(callback)
                 }
             }
@@ -44,42 +71,77 @@ interface RetrofitAPI {
     }
 }
 
-fun <R> RetrofitAPI.fetchJson(
+/**
+ * Fetch for response type `R` and callback in `success` callback. Invokes failure with
+ * an error subtype of `AnyFetchError` upon failure.
+ *
+ * @param usingExecutor Network request executor (set to `this.executor` by default)
+ * @param endpoint The API endpoint that should be fetched
+ * @param success Success callback with the response `R`
+ * @param failure Failure callback with an error case from `AnyFetchError` subtypes
+ */
+fun <R> RetrofitFetching.fetch(
+    usingExecutor: RetrofitFetching.Executor = executor,
     endpoint: Call<R>,
     success: (R) -> Unit,
     failure: (AnyFetchError) -> Unit
 ) {
-    val resultProcessing = object : RetrofitAsyncResultProcessing<R, AnyFetchError>{}
-    fetchJson(endpoint, resultProcessing, success, failure)
+    val resultProcessing = RetrofitFetching.anyFetchErrorResultProcessing<R>(
+        determineNetworkError = if (checkNetwork == null) { null }
+        else { { if (checkNetwork!!.invoke()) null else AnyFetchError.NotFound.MissingNetwork } }
+    )
+    fetch(usingExecutor, endpoint, resultProcessing, success, failure)
 }
 
-fun <R, E: AnyFetchError> RetrofitAPI.fetchJson(
+/**
+ * Fetch for response type `R` and callback in `success` callback. Invokes failure with
+ * an error subtype of `E : AnyFetchError` upon failure.
+ *
+ * @param usingExecutor Network request executor (set to `this.executor` by default)
+ * @param endpoint The API endpoint that should be fetched
+ * @param resultProcessing Processes response and finds correct error case (if needed)
+ * @param success Success callback with the response `R`
+ * @param failure Failure callback with an error case from given error subtype `E`
+ */
+fun <R, E: AnyFetchError> RetrofitFetching.fetch(
+    usingExecutor: RetrofitFetching.Executor = executor,
     endpoint: Call<R>,
-    resultProcessing: RetrofitAsyncResultProcessing<R, E>,
+    resultProcessing: RetrofitFetching.ResultProcessing<R, E>,
     success: (R) -> Unit,
     failure: (E) -> Unit
 ) {
-    fetchJson(endpoint = endpoint, resultProcessing = resultProcessing, callback = {
-        when(it) {
+    fetch(usingExecutor, endpoint, resultProcessing) {
+        when (it) {
             is RetrofitResult.Success -> success(it.result)
             is RetrofitResult.Failure -> failure(it.error)
         }.forceExhaustive()
-    })
+    }
 }
 
-fun Any?.forceExhaustive() = Unit
+/** Use to force exhaustive switch handling (until Kotlin adds builtin support) */
+fun Any.forceExhaustive() = Unit
 
 private sealed class RetrofitResult<R, E: AnyFetchError> {
     data class Success<R, E: AnyFetchError>(val result: R) : RetrofitResult<R, E>()
     data class Failure<R, E: AnyFetchError>(val error: E) : RetrofitResult<R, E>()
 }
 
-private fun <R, E: AnyFetchError> RetrofitAPI.fetchJson(
+private fun <R, E: AnyFetchError> fetch(
+    usingExecutor: RetrofitFetching.Executor,
     endpoint: Call<R>,
-    resultProcessing: RetrofitAsyncResultProcessing<R, E>,
+    resultProcessing: RetrofitFetching.ResultProcessing<R, E>,
     callback: (RetrofitResult<R, E>) -> Unit,
 ) {
-    fetching.fetch(endpoint, object : Callback<R> {
+
+    if (resultProcessing.determineNetworkError != null) {
+        resultProcessing.determineNetworkError!!.invoke()?.let { networkError ->
+            callback(RetrofitResult.Failure(networkError))
+            return // Exit early
+        }
+    }
+
+    usingExecutor.fetchAndCallback(endpoint, object : Callback<R> {
+
         override fun onFailure(call: Call<R>, t: Throwable) {
             callback(RetrofitResult.Failure(resultProcessing.onFailure(call, t)))
         }
@@ -99,66 +161,87 @@ private fun <R, E: AnyFetchError> RetrofitAPI.fetchJson(
                 RetrofitResult.Failure(resultProcessing.onNoData(call, response))
             }
         }
+
     })
 }
 //endregion
 
-//region Retrofit Asynchronous Result Processing
+//region Retrofit Standard Result Processing
 
-interface RetrofitAsyncResultProcessing<R, E: AnyFetchError> {
-    fun onFailure(call: Call<R>, t: Throwable): E {
-        // TODO: Check other cases
-        return AnyFetchError.notFound(
-            error = AnyFetchError.NotFound.missingNetwork,
-            addingDump = "(Throwable): $t\n(Call): $call"
-        ) as E
-    }
+/**
+ * Returns result processing object for given response type `R` and error type `AnyFetchError`
+ *
+ * @param determineNetworkError A block that's invoked to check network connection error.
+ */
+fun <R> RetrofitFetching.Companion.anyFetchErrorResultProcessing(
+    determineNetworkError: (() -> AnyFetchError?)?
+) : RetrofitFetching.ResultProcessing<R, AnyFetchError> {
+    return object : RetrofitFetching.ResultProcessing<R, AnyFetchError> {
 
-    fun onNoData(call: Call<R>, rawResponse: Response<R>): E {
-        return AnyFetchError.badRequest(
-            error = AnyFetchError.BadRequest.decode,
-            addingDump = "(Response): $rawResponse\n(Call): $call"
-        ) as E
-    }
+        override var determineNetworkError: (() -> AnyFetchError?)? = determineNetworkError
 
-    fun onResponse(call: Call<R>, response: Response<R>): E? {
-        // Note: subclasses could validate the response further and return error
-        return if (response.isSuccessful) null else
-            AnyFetchError.BadStatusCode(response.code(), response) as E
+        override var onFailure: (Call<R>, Throwable) -> AnyFetchError = { call, t ->
+            val error: AnyFetchError = when(t) {
+                is UnknownHostException -> {
+                    if (determineNetworkError == null) AnyFetchError.Unknown()
+                    else determineNetworkError!!.invoke() ?: AnyFetchError.BadRequest.Encode
+                }
+                is IllegalStateException -> AnyFetchError.BadRequest.Decode
+
+                //TODO: Check other cases
+                else -> AnyFetchError.Unknown()
+            }
+            AnyFetchError.make(error = error, addingDump = "(Throwable): $t\n(Call): $call")
+        }
+
+        override var onNoData: (Call<R>, Response<R>) -> AnyFetchError = { call, response ->
+            AnyFetchError.make(
+                error = AnyFetchError.NotFound.MissingData,
+                addingDump = "(Response): $response\n(Call): $call"
+            )
+        }
+
+        override var onResponse: (Call<R>, Response<R>) -> AnyFetchError? = { _, response ->
+            // Note: subclasses could validate the response further and return error
+            if (response.isSuccessful) null else
+                AnyFetchError.BadStatusCode(response.code(), response)
+        }
+
     }
 }
+
 //endregion
 
 //region Generic Network Error Types
 
+/** Supertype for network error types. */
 sealed interface AnyFetchError {
 
-    val description: String
+    var description: String
 
     enum class BadRequest(override var description: String) : AnyFetchError {
-        encode("Error encoding request! $dumpKeyWord"),
-        decode("Error decoding request! $dumpKeyWord"),
+        Encode("FIXME: Error encoding request! $dumpKeyWord"),
+        Decode("FIXME: Error decoding request! $dumpKeyWord"),
     }
 
     enum class NotFound(override var description: String) : AnyFetchError {
-        missingData("No data found! $dumpKeyWord"),
-        missingNetwork("No network! $dumpKeyWord")
+        MissingData("No data found! $dumpKeyWord"),
+        MissingNetwork("No network! $dumpKeyWord")
     }
 
     data class BadStatusCode (val statusCode: Int, val rawResponse: Any) : AnyFetchError {
-        override val description: String
-            get() = "Bad status code: $statusCode. Raw response: $rawResponse"
+        override var description: String =
+            "Bad status code: $statusCode. Raw response: $rawResponse"
     }
+
+    data class Unknown(
+        override var description: String = "Unknown Error! $dumpKeyWord"
+    ) : AnyFetchError
 
     companion object {
         const val dumpKeyWord: String = "dump:-"
 
-        fun badRequest(error: BadRequest, addingDump: String) : BadRequest {
-            error.description = error.description + addingDump
-            return error
-        }
-
-        fun notFound(error: NotFound, addingDump: String) : NotFound {
+        fun make(error: AnyFetchError, addingDump: String) : AnyFetchError {
             error.description = error.description + addingDump
             return error
         }
