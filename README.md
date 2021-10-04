@@ -29,7 +29,7 @@ class API(
     override val executor: RetrofitFetching.Executor = RetrofitFetching.callEnqueue 
 ) : RetrofitFetching {
 
-    fun fetchItem(success: (Item) -> Unit, failure: (AnyFetchError) -> Unit) {
+    fun fetchItem(success: (Item) -> Unit, failure: (FetchError) -> Unit) {
         // Networking and response processing is all implemented 
         // in `fetch` default implementation
         fetch(endpoint = endpoint.fetchItem(), success = success, failure = failure)
@@ -73,16 +73,23 @@ e.g. see how this property is used to simulate networking in the unit tests (Ret
 
 #### Customize the error objects and result processing 
 
-This simple implementation contains a sealed interface `AnyFetchError` with few concrete error cases: 
+This simple implementation contains a sealed interface `FetchError` with few concrete error cases: 
 `BadRequest, NotFound and BadStatusCode`. A simple handling of these error cases could be showing the appropriate error message:
 
 ```kotlin
-failure = { error -> /* of type `AnyFetchError` */
+failure = { error -> /* of type `FetchError` */
+    when(error) {
+        Is
+    }
     val message: String = when(error) {
-        is AnyFetchError.BadRequest -> TODO()
-        is AnyFetchError.BadStatusCode -> TODO()
-        AnyFetchError.NotFound.missingNetwork -> TODO()
-        AnyFetchError.NotFound.missingData -> TODO()
+        is Network -> when(error.underlyingError) {
+            AnyFetchError.BadRequest.Encode -> "Encoding error"
+            AnyFetchError.BadRequest.Decode -> "Decoding error"
+            AnyFetchError.NotFound.MissingData -> "No data"
+            AnyFetchError.NotFound.MissingNetwork -> "No network"
+            is AnyFetchError.BadStatusCode -> "Bad status code"
+            is AnyFetchError.Unknown -> "Unknown"
+        }
     }
 }
 ```
@@ -96,8 +103,12 @@ And lets say we don't want this to be handled in `BadStatusCode` with just an in
 
 First, create the error case:
 ```kotlin
-sealed interface PrivateDataFetchError : AnyFetchError
-data class NotAuthorized(override val description: String) : PrivateDataFetchError
+sealed interface PrivateDataFetchError {
+    data class NotAuthorized(val description: String) : PrivateDataFetchError
+    
+    // Use the existing `AnyFetchError` for all common network error cases. 
+    data class Network(val underlyingError: AnyFetchError) : PrivateDataFetchError
+}
 ```
 
 Then, override result processing and make sure `NotAuthorized` error case is thrown 
@@ -114,7 +125,7 @@ fun privateDataFetchProcessing() : RetrofitAsyncResultProcessing<Diary, PrivateD
 }
 ```
 
-Now the API for this endpoint should require `PrivateDataFetchError` instead of `AnyFetchError` forcing the receiver 
+Now the API for this endpoint should require `PrivateDataFetchError` instead of `FetchError` forcing the receiver 
 to handle all error cases, including `NotAuthorized` exhaustively. 
 
 ```kotlin

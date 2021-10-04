@@ -46,7 +46,7 @@ import java.net.UnknownHostException
  *  // Build endpoints using your Retrofit service interface
  *  val endpoint: Endpoint = Retrofit.Builder().customBuild(baseURL).create(Endpoint::class.java)
  *
- *  fun fetchItem(success: (Item) -> Unit, failure: (AnyFetchError) -> Unit) {
+ *  fun fetchItem(success: (Item) -> Unit, failure: (FetchError) -> Unit) {
  *      // Fetching, parsing and returning through `success` or `failure` is handled
  *      this.fetch(endpoint = endpoint.fetchItem(), success = success, failure = failure)
  *  }
@@ -54,7 +54,7 @@ import java.net.UnknownHostException
  * ```
  *
  * See `executor` which uses Retrofit Call<T> `enqueue` by default and `resultProcessing`
- * which uses a default processing using `AnyFetchError` object to customize if and API requires
+ * which uses a default processing using `FetchError` object to customize if and API requires
  * custom handling. Most fetch requests can be satisfied without a need for custom handling.
  */
 interface RetrofitFetching {
@@ -73,16 +73,13 @@ interface RetrofitFetching {
      * An object that receives Retrofit `Callback<T>` arguments and determines whether or not
      * an error should be returned. Use to return specific error cases for a given network request.
      * */
-    interface ResultProcessing<R, E> where E : AnyFetchError {
+    interface ResultProcessing<R, E> {
         /** Invoked when Retrofit callback `onFailure` is received. */
         val onFailure: (call: Call<R>, t: Throwable) -> E
         /** Invoked when Retrofit callback `onResponse` is received with no data. */
         val onNoData: (call: Call<R>, response: Response<R>) -> E
         /** Invoked when Retrofit callback `onResponse` is received. */
         val onResponse: (call: Call<R>, response: Response<R>) -> E?
-
-        /** Check network connection and return `true`, `false` or `null` if unable to check. */
-        var determineNetworkError: (() -> E?)?
     }
 
     companion object {
@@ -110,11 +107,11 @@ fun <R> RetrofitFetching.fetch(
     usingExecutor: RetrofitFetching.Executor = executor,
     endpoint: Call<R>,
     success: (R) -> Unit,
-    failure: (AnyFetchError) -> Unit
+    failure: (FetchError) -> Unit
 ) {
-    val resultProcessing = RetrofitFetching.anyFetchErrorResultProcessing<R>(
-        determineNetworkError = if (checkNetwork == null) { null }
-        else { { if (checkNetwork!!.invoke()) null else AnyFetchError.NotFound.MissingNetwork } }
+    val resultProcessing = StandardRetrofitResultProcessing<R, FetchError>(
+        hasNetwork = checkNetwork,
+        mapNetworkError = { FetchError.Network(it) }
     )
     fetch(usingExecutor, endpoint, resultProcessing, success, failure)
 }
@@ -129,7 +126,7 @@ fun <R> RetrofitFetching.fetch(
  * @param success Success callback with the response `R`
  * @param failure Failure callback with an error case from given error subtype `E`
  */
-fun <R, E: AnyFetchError> RetrofitFetching.fetch(
+fun <R, E> RetrofitFetching.fetch(
     usingExecutor: RetrofitFetching.Executor = executor,
     endpoint: Call<R>,
     resultProcessing: RetrofitFetching.ResultProcessing<R, E>,
@@ -147,25 +144,17 @@ fun <R, E: AnyFetchError> RetrofitFetching.fetch(
 /** Use to force exhaustive switch handling (until Kotlin adds builtin support) */
 fun Any.forceExhaustive() = Unit
 
-private sealed class RetrofitResult<R, E: AnyFetchError> {
-    data class Success<R, E: AnyFetchError>(val result: R) : RetrofitResult<R, E>()
-    data class Failure<R, E: AnyFetchError>(val error: E) : RetrofitResult<R, E>()
+private sealed class RetrofitResult<R, E> {
+    data class Success<R, E>(val result: R) : RetrofitResult<R, E>()
+    data class Failure<R, E>(val error: E) : RetrofitResult<R, E>()
 }
 
-private fun <R, E: AnyFetchError> fetch(
+private fun <R, E> fetch(
     usingExecutor: RetrofitFetching.Executor,
     endpoint: Call<R>,
     resultProcessing: RetrofitFetching.ResultProcessing<R, E>,
     callback: (RetrofitResult<R, E>) -> Unit,
 ) {
-
-    if (resultProcessing.determineNetworkError != null) {
-        resultProcessing.determineNetworkError!!.invoke()?.let { networkError ->
-            callback(RetrofitResult.Failure(networkError))
-            return // Exit early
-        }
-    }
-
     usingExecutor.fetchAndCallback(endpoint, object : Callback<R> {
 
         override fun onFailure(call: Call<R>, t: Throwable) {
@@ -195,50 +184,62 @@ private fun <R, E: AnyFetchError> fetch(
 //region Retrofit Standard Result Processing
 
 /**
- * Returns result processing object for given response type `R` and error type `AnyFetchError`
+ * Returns result processing object for given response type `R` and error type `E`
  *
- * @param determineNetworkError A block that's invoked to check network connection error.
+ * @param hasNetwork A block that's invoked to check network connection error.
+ * @param mapNetworkError Maps common network errors - `AnyFetchError`, to error-type `E`.
+ *
  */
-fun <R> RetrofitFetching.Companion.anyFetchErrorResultProcessing(
-    determineNetworkError: (() -> AnyFetchError?)?
-) : RetrofitFetching.ResultProcessing<R, AnyFetchError> {
-    return object : RetrofitFetching.ResultProcessing<R, AnyFetchError> {
+class StandardRetrofitResultProcessing<R, E>(
+    hasNetwork: (() -> Boolean)?,
+    mapNetworkError: (AnyFetchError) -> E
+) : RetrofitFetching.ResultProcessing<R, E> {
 
-        override var determineNetworkError: (() -> AnyFetchError?)? = determineNetworkError
-
-        override var onFailure: (Call<R>, Throwable) -> AnyFetchError = { call, t ->
-            val error: AnyFetchError = when(t) {
-                is UnknownHostException -> {
-                    if (determineNetworkError == null) AnyFetchError.Unknown()
-                    else determineNetworkError!!.invoke() ?: AnyFetchError.BadRequest.Encode
+    override var onFailure: (call: Call<R>, t: Throwable) -> E = { call, t ->
+        val error: AnyFetchError = when(t) {
+            is UnknownHostException -> {
+                if (hasNetwork != null) {
+                    if (hasNetwork()) AnyFetchError.BadRequest.Encode
+                    else AnyFetchError.NotFound.MissingNetwork
+                } else {
+                    // Cannot distinguish the error case from `MissingNetwork` and `Encode` error.
+                    AnyFetchError.Unknown()
                 }
-                is IllegalStateException -> AnyFetchError.BadRequest.Decode
-
-                //TODO: Check other cases
-                else -> AnyFetchError.Unknown()
             }
-            AnyFetchError.make(error = error, addingDump = "(Throwable): $t\n(Call): $call")
-        }
+            is IllegalStateException -> AnyFetchError.BadRequest.Decode
 
-        override var onNoData: (Call<R>, Response<R>) -> AnyFetchError = { call, response ->
+            //TODO: Check other cases
+            else -> AnyFetchError.Unknown()
+        }
+        mapNetworkError(
+            AnyFetchError.make(error = error, addingDump = "(Throwable): $t\n(Call): $call")
+        )
+    }
+
+    override var onNoData: (call: Call<R>, response: Response<R>) -> E = { call, response ->
+        mapNetworkError(
             AnyFetchError.make(
                 error = AnyFetchError.NotFound.MissingData,
                 addingDump = "(Response): $response\n(Call): $call"
             )
-        }
-
-        override var onResponse: (Call<R>, Response<R>) -> AnyFetchError? = { _, response ->
-            // Note: subclasses could validate the response further and return error
-            if (response.isSuccessful) null else
-                AnyFetchError.BadStatusCode(response.code(), response)
-        }
-
+        )
     }
+
+    override var onResponse: (call: Call<R>, response: Response<R>) -> E? = { call, response ->
+        // Note: subclasses could validate the response further and return error
+        if (response.isSuccessful) null else
+            mapNetworkError(AnyFetchError.BadStatusCode(response.code(), response))
+    }
+
 }
 
 //endregion
 
 //region Generic Network Error Types
+
+sealed interface FetchError {
+    data class Network(val underlyingError: AnyFetchError) : FetchError
+}
 
 /** Supertype for network error types. */
 sealed interface AnyFetchError {
@@ -260,6 +261,11 @@ sealed interface AnyFetchError {
             "Bad status code: $statusCode. Raw response: $rawResponse"
     }
 
+    /**
+     * Represents a vague error case typically caused by `UnknownHostException`.
+     * This error case is encountered if and only if network status cannot be determined
+     * while the `UnknownHostException` is received.
+     */
     data class Unknown(
         override var description: String = "Unknown Error! $dumpKeyWord"
     ) : AnyFetchError
@@ -276,4 +282,6 @@ sealed interface AnyFetchError {
 }
 
 //endregion
+
+
 
