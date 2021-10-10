@@ -53,7 +53,7 @@ class RetrofitFetchingTest {
     }
 
     @Test fun testOnFailureReturnsError() {
-        var receivedError: AnyFetchError? = null
+        var receivedError: FetchError? = null
         NetworkingSimulation(Throwable("-")).fetch(
             endpoint = api.fetchTestData(),
             success = { },
@@ -88,9 +88,26 @@ class RetrofitFetchingTest {
         assert(!receivedData) { "$assertKeyWord Failure response must not invoke success" }
     }
 
+    @Test fun testNullResponseBodyForRequestExpectingUnitInvokesSuccess() {
+        var expectedResponse: Unit? = null
+        var receivedError = false
+        NetworkingSimulation(null).fetch(
+            endpoint = api.fetchUnit(),
+            success = { expectedResponse = it },
+            failure = { receivedError = true }
+        )
+
+        assert(expectedResponse == Unit)
+        { "$assertKeyWord Request expecting Unit must invoke success with Unit instead of null" }
+        assert(!receivedError) { "$assertKeyWord Success Unit response must not invoke failure" }
+    }
+
     interface TestEndpoint {
         @GET("http://test/")
         fun fetchTestData(): Call<TestData>
+
+        @GET("http://test/")
+        fun fetchUnit(): Call<Unit>
     }
 
     data class TestData (val id: Int = 1)
@@ -121,7 +138,7 @@ class NetworkingSimulation(
     }
 
     /** Fakes synchronous success response */
-    constructor(data: Any) : this({ call, callback ->
+    constructor(data: Any?) : this({ call, callback ->
         callback.onResponse(call, Response.success(data))
     })
 
